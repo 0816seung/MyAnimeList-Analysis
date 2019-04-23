@@ -1,0 +1,422 @@
+---
+title: "DS4100 Project - Anime Stats"
+output: html_notebook
+---
+
+Business Understanding:
+
+This project aims to analyze the relationships between the popularity, reception, genres, length, and types of different anime.
+
+The particular data set comes from a Kaggle entry (URL: https://www.kaggle.com/CooperUnion/anime-recommendations-database) that seeks to build an anime recommendation system. This entry acquired the data from MyAnimeList.net, a public website for anime to log their anime consumption and provide their input of their impressions of what they've seen.
+This database is particularly unique. Anime is a form of media made by and largely for an Eastern audience (mostly Japanese but also Chinese, Korean, and Vietnamese to a lesser extent) while MyAnimeList.net is a website run and used by a Western audience, primarily consisting of English, Spanish, French, and German speakers. Essentially, this provides data about the impressions of Eastern media by a Western audience which could be drastically different from data investigating Eastern audiences. Repeating this project over such a data set to draw comparisons and analyze possible reasons for differences between the two is a potential followup to this project.
+
+The project should identify how strong a relationship there is between popularity, reception, genres, length, and types of different anime and produce a few models capable of making predictions about a feature given the others.
+
+Data understanding:
+
+We begin by collecting the data through a csv file provided by a Kaggle user.
+The original data is left untouched while a copy is modified for better analysis.
+For clarification, "members" refers to the number of people who have watched the anime, indicating its popularity. String splitting was used to determine a vector of genres for each entry rather than an unparsed string listing them. These vectors of genres were used to create a list of all unique genres across entires that would be used later.
+
+```{r}
+dtf_original <- read.csv("anime.csv", stringsAsFactors = FALSE)
+dtf <- dtf_original
+dtf$episodes <- as.numeric(dtf$episodes)
+dtf$type <- as.factor(dtf$type)
+
+# Purpose: parses genre string into string vector of genres
+# Args: genreString (character) - comma separated genre string from data
+# Returns: (character vector) - vector with separate genres
+genreVec <- function(genreString) {
+  return(strsplit(genreString, ", ")[[1]])
+}
+
+# Transforms all genre strings into more usable genre vectors
+dtf$genreVec <- sapply(dtf$genre, genreVec)
+
+# List of all of the unique genres
+allGenres <- Reduce(union, dtf$genreVec)
+allTypes <- levels(factor(dtf$type))
+```
+A few different approaches were taken to exploring the data.
+First, the distribution of the two primary continuous variables in question, rating and members, were examined through histograms.
+The histograms suggested that roughly, rating had a normal distribution and members had a poisson distribution.
+
+```{r}
+hist(dtf$rating, main="Rating Histogram", xlab="Rating")
+hist(dtf$members, main="Members Histogram", xlab="Members")
+```
+
+The plot between rating and members illustrates a vaguely positive correlation between the two, but the majority of anime have a drastically lower popularity than certain popular ones. To account for this, the data set was split for further analysis: the top 50% and the bottom 50% in popularity.
+
+Outliers hindered manual observation, so they were removed just for the observation phase. They were largely left in for analysis (outliers explained further below).
+
+Exploratory data plots:
+```{r}
+# Purpose: plots the rating vs members for the given dataframe
+# Args: df (dataframe) - dataframe to plot, title (character) - title for plot
+# Returns: None
+plotRM <- function(df, title) {
+  plot(df$rating, df$members, main=title, xlab="Rating", ylab="Members")
+}
+
+plotRM(dtf, "All")
+
+dtf_member_sorted <- dtf[order(-dtf$members),]
+topNum <- floor(nrow(dtf) * .5)
+dtf_top <- dtf[1:topNum,]
+dtf_bot <- dtf[-(1:topNum),]
+plotRM(dtf_top, "Top 50%")
+plotRM(dtf_bot, "Bottom 50%")
+
+top_out <- boxplot.stats(dtf_top$members)$out
+dtf_top_out_rm <- dtf_top[!(is.element(dtf_top$members, top_out)),]
+plotRM(dtf_top_out_rm, "Top 50% - Outliers Removed")
+
+bot_out <- boxplot.stats(dtf_bot$members)$out
+dtf_bot_out_rm <- dtf_bot[!(is.element(dtf_bot$members, bot_out)),]
+plotRM(dtf_bot_out_rm, "Bottom 50% - Outliers Removed")
+```
+
+Outliers for rating and popularity were determined for the entire dataset.
+Outliers were determined using the built-in boxplot stats which determines anything outside of 1.5 times the interquartile range (75th-25th percentile) as an outlier.
+Upon examination, it was determined best to keep these in place rather than remove them. The outliers are concentrated rather than individually spread. A large group of low ranking or low popularity anime make up the outliers while the top outliers command the highest ratings or highest popularity, meaning they are a reflection of the most people in the community. Therefore, since removing these before analysis would produce a less accurate representation of the data, a majority of them was kept.
+However, it was noted that some shows had extremely low popularity with very extreme ratings. Shows with extremely few members were volatile in that very few scores would push its rating drastically upwards or downwards, so they were not very representative of the opinion of the community as a whole. Therefore, entries with outliers in ratings (high or low) and outliers in members on the low side were removed.
+
+```{r}
+ratingOut <- boxplot.stats(dtf$rating)$out
+membersOut <- boxplot.stats(dtf$members)$out
+
+length(ratingOut)
+head(ratingOut, 30)
+length(membersOut)
+head(membersOut, 30)
+
+membersAvg <- mean(dtf$members)
+
+dtf <- dtf[!(is.element(dtf$rating, ratingOut) & is.element(dtf$members, membersOut)
+             & (dtf$members < membersAvg)),]
+```
+
+It is also worth examining the ratings by genre. Since there are 48 genres, a select few were chosen for examination. In choosing, popular genres were considered because they reflected the largest portion of viewership, and popular genres were decided by summing up the members of every show that was in that genre. The number of shows in a given genre were not used because numerous shows with fairly little popularity reflected little about the opinions of most viewers. The top 7 popular ones were chosen for analysis. They ultimately reflected similar graphs to the graph of all of them.
+
+```{r}
+# Purpose: finds the sum members of shows of the given genre
+# Args: (character) g - the genre in question
+# Returns: (numeric) - the sum members of shows of this genre
+howManyMembers <- function(g) {
+  return(sum(sapply(c(1:nrow(dtf)), function(row){
+    if (grepl(g, dtf[row,]$genre)) {
+      return(dtf[row,]$members)
+    }
+    else {
+      return(0)
+    }
+  })))
+}
+
+# This code was used to find which genres were the most popular.
+# This is not necessary to repeat now that the information is known,
+# but it could be run again if necessary but uncommenting it.
+
+#if (!exists("genrePop")) {
+#  genrePop <- data.frame(allGenres, sapply(allGenres, howManyMembers))
+#  colnames(genrePop) <- c("Genre", "TotalMembers")
+#  genrePop <- genrePop[order(-genrePop$TotalMembers),]
+#}
+
+# Purpose: plots rating vs members for shows with the given genre
+# Args: (character) g - genre of interest
+# Returns: none
+plotGenre <- function(g) {
+  dtf_sub <- dtf[grep(g, dtf$genre),]
+  plotRM(dtf_sub, g)
+}
+popGenres <- c("Comedy","Action","Romance","Drama","Fantasy", "Supernatural","Shounen")
+invisible(sapply(popGenres, plotGenre))
+
+```
+
+Data Preparation:
+
+The data needed to be cleaned in certain ways before analysis, particularly in regards to missing data.
+Entries missing both their rating were shows that had not yet aired. As these do not reflect what the audience has actually seen, they were simply removed.
+Of the entries remaining missing their episode count, a large portion of them were under the category of "Hentai." To ensure more complete data using this information, the applicable entries had their episode counts imputed to the floored average of the entries of that category that did have their episode counts listed.
+Some of the remaining entries were then filled in manually because they were known exceptions from previous knowledge that would greatly impact the data if filled in using the average.
+The remaining entries missing their episode counts had them imputed using the average of their respective type.
+Entries of the type "Music" were also removed entirely. This was done for a few reasons.
+Entries of this type are animated music videos, something fundamentally different from animated shorts, TV series, movies, or specials. Because this category has such fundamentally standards and audiences, it introduced information that was not relevant to the rest of the data. Thus, it was removed.
+
+```{r}
+allTypes <- allTypes[!allTypes=="Music"]
+dtf <- dtf[!(dtf$type == "Music" | is.na(dtf$rating)),]
+dtf_H <- dtf[grep("Hentai", dtf$genre),]
+h_floored_mean <- floor(mean(dtf_H$episodes, na.rm = TRUE)) # 2
+dtf[is.na(dtf$episodes) & grepl("Hentai", dtf$genre),]$episodes <- h_floored_mean
+
+dtf[dtf$name == "Sazae-san",]$episodes <- 7542
+dtf <- dtf[!dtf$name == "Sazae-san",]
+dtf[dtf$name == "Nintama Rantarou",]$episodes <- 2017
+dtf[dtf$name == "Ojarumaru",]$episodes <- 1677
+dtf[dtf$name == "Sore Ike! Anpanman",]$episodes <- 1399
+dtf[dtf$name == "Chibi Maruko-chan",]$episodes <- 1143
+dtf[dtf$name == "Crayon Shin-chan",]$episodes <- 958
+dtf[dtf$name == "Doraemon (2005)",]$episodes <- 911
+dtf[dtf$name == "Detective Conan",]$episodes <- 897
+dtf[dtf$name == "One Piece",]$episodes <- 831
+dtf[dtf$name == "Hanakappa",]$episodes <- 485
+dtf[dtf$name == "Naruto: Shippuuden",]$episodes <- 500
+
+# Purpose: imputes the episode counts for all entries of that type
+# Args: (character) type - type to impute for
+# Returns: None
+imputeEpisodes <- function(t) {
+  typeMean <- mean(dtf[dtf$type == t,]$episodes, na.rm = TRUE)
+  if (nrow(dtf[dtf$type == t & is.na(dtf$episodes),]) > 0) {
+    dtf[dtf$type == t & is.na(dtf$episodes),]$episodes <<- typeMean
+  }
+  return(NULL)
+}
+invisible(sapply(allTypes, imputeEpisodes))
+```
+
+The data needed to be normalized before constructing models.
+The various numeric features were normalized using min-max.
+These changes were made in a new copy of the dataframe.
+The categorical features of type and genre needed to be accounted for through feature engineering of dummy codes.
+```{r}
+dtf_norm <- dtf
+
+# Purpose: performs min-max normalization on the given column vector/list
+# Args: col (vector) - column vector
+# Returns: (vector) - column vector after min-max normalization
+min_max <- function(col) {
+  colMin <- min(col)
+  colMax <- max(col)
+  denom <- colMax - colMin
+  return(sapply(col, function(entry){
+    return((entry - colMin)/denom)
+  }))
+}
+
+dtf_norm$rating <- min_max(dtf_norm$rating)
+dtf_norm$episodes <- min_max(dtf_norm$episodes)
+dtf_norm$members <- min_max(dtf_norm$members)
+
+# Purpose: adds new column with dummy feature for genre to normalized dataframe
+# Args: (character) g - genre to add feature for
+# Returns: None
+addGenreColumn <- function(g) {
+  colVec <- sapply(c(1:nrow(dtf_norm)), function(row) {
+    if (is.element(g, dtf_norm[row,]$genreVec[[1]])) {
+      return(1)
+    }
+    else {
+      return(0)
+    }
+  })
+  dtf_norm[g] <<- colVec
+  return(NULL)
+}
+# Takes a long time due to generating dozens of columns
+invisible(sapply(allGenres, addGenreColumn))
+allTypes <- allTypes[allTypes != ""]
+# Takes less time than previous step but still a while
+invisible(sapply(allTypes, function(t) {
+  colVec <- sapply(c(1:nrow(dtf_norm)), function(row) {
+    if (dtf_norm[row,]$type == t) {
+      return(1)
+    }
+    else {
+      return(0)
+    }
+  })
+  dtf_norm[t] <<- colVec
+  return(NULL)
+}))
+```
+
+Modeling & Evaluation:
+
+Training and validation sets were chosen randomly with 70% used for training and 30% used for validation.
+
+A multiple linear regression model was used to model and predict rating. Since rating was normally distributed, the Gaussian family (default) was used in modeling.
+It is important to note that in the model below, "Music" refers to the type of anime (animated music video) while "get("Music")" refers to the genre of anime (animated TV series, movie, etc. about music).
+
+```{r}
+# Training and Validation Sets
+
+set.seed(100) # number doesn't matter - used for reproducible random seed
+train_indices <- sample(seq_len(nrow(dtf_norm)), size=floor(0.7*nrow(dtf_norm)))
+
+train_set <- dtf_norm[train_indices,]
+test_set <- dtf_norm[-train_indices,]
+
+glmForm <- as.formula(paste("rating ~ episodes + members + ", paste(allTypes, collapse=" + "), " + ", paste(sprintf("get('%s')", allGenres), collapse=" + ")))
+iden <- glm(glmForm, data=train_set)
+summary(iden)
+```
+The results above indicate that with .01 as the baseline for statistical significance,
+a number of categories are statistically insignificant.
+These are removed in the next iteration to better fit the model.
+There is also a singularity of TV. The colinearity matrix is observed below to identify this.
+```{r}
+alias(iden)
+```
+Ultimately, one of the dummy features for type is unnecessary because types are mutually exclusive, and thus one type can be expressed by showing 0 on all other type dummy features. Since TV is of particular interest, the least statistically significant type, "Special", is removed instead.
+
+```{r}
+unwantedGenres <- c("Parody", "Samurai", "Super Power", "Space", "Mecha", "Music", "Martial Arts", "Vampire", "Psychological", "Demons", "Ecchi", "Shounen Ai", "Harem", "Game", "Cars", "Shoujo Ai", "Yaoi", "Yuri")
+glmForm2 <- as.formula(paste("rating ~ episodes + members + Movie + ONA + OVA + TV + ", paste(sprintf("get('%s')", setdiff(allGenres, unwantedGenres)), collapse=" + ")))
+iden2 <- glm(glmForm2, data=train_set)
+summary(iden2)
+```
+
+Predictions were made to evaluate the model's accuracy.
+Accuracy was measured in three ways: correlation, min max accuracy, and mean absolute percentage error (MAPE). 
+
+```{r}
+glm_predictions <- predict(iden2, test_set, type="response")
+reg_cor <- cor(test_set$rating, glm_predictions)
+
+# Purpose: calculates the min max accuracy of the test set and predictions
+# Args: (dataframe) ts - test set, (vector) pred - predictions,
+#       (character) cName - column to predict
+# Returns: (numeric) - min max accuracy of predictions
+acc_min_max <- function(ts, pred, cName) {
+  return(mean(sapply(1:nrow(ts), function(row) {
+    actual <- ts[row,cName]
+    predicted <- pred[row]
+    return(min(actual, predicted)/max(actual, predicted))
+  })))
+}
+
+reg_min_max <- acc_min_max(test_set, glm_predictions, "rating")
+
+# Purpose: calculates the Mean Absolute Percentage Error of the test set and predictions
+# Args: (dataframe) ts - test set, (vector) pred - predictions,
+#       (character) cName - column to predict
+# Returns: (numeric) - Mean Absolute Percentage Error (MAPE)
+acc_mape <- function(ts, pred, cName) {
+  return(mean(sapply(1:nrow(ts), function(row) {
+    actual <- ts[row,cName]
+    predicted <- pred[row]
+    return(abs(predicted - actual)/actual)
+  })))
+}
+
+reg_mape <- acc_mape(test_set, glm_predictions, "rating")
+
+paste("Correlation: ", reg_cor)
+paste("Min Max Accuracy: ", reg_min_max)
+paste("Mean Absolute Percentage Error (MAPE): ", reg_mape)
+```
+These results illustrated that the model had good predictive ability on average but weaker correlation with the individual results.
+The relatively high min max accuracy and relatively low MAPE suggest that the model is a good fit for making predictions about rating. The coefficients suggest that despite suspicions people may have about popular shows, the number of members is a fairly good predictor of the rating overall. The episode count seems to have some influence on this as well, and this could be explained with the idea that shows that are well received are more likely to get more and more episodes made while shows that are't well received are likely to be cut fairly short. As for genre as a predictor, more niche genres appear to paint a clearer image of how the rating will turn out. The Josei genre, a genre intended for older female audiences, has relatively smaller audiences, but shows of the genre tend to be well received. The Dementia genre on the other hand seems to be very poorly received even though it has a relatively small audience like the Josei genre.
+Overall, the more popular a genre, the less influence the genre itself seems to have on the rating, likely due to oversaturation of good and bad shows.
+
+To test whether the model tended to overshoot or undershoot, a simple count of how many of each it did was conducted below.
+```{r}
+undershoot <- sum(sapply(1:nrow(test_set), function(row){
+  if (glm_predictions[row] < test_set[row,]$rating) {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}))
+overshoot <- sum(sapply(1:nrow(test_set), function(row){
+  if (glm_predictions[row] > test_set[row,]$rating) {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+}))
+paste("Undershoot %: ", undershoot/nrow(test_set))
+paste("Overshoot %: ", overshoot/nrow(test_set))
+paste("Exact %: ", (nrow(test_set) - (undershoot + overshoot))/nrow(test_set))
+```
+As shown above, the model leans slightly towards overshooting but not a significant amount.
+
+Another model would provide a point of comparison for accuracy of guessing rating based on the other factors. Below, the kNN model for regression is used to predict rating. The models below are created with various values of k centered around the suggested square-root of the number of features.
+
+```{r}
+library("DMwR")
+dtf_knn <- dtf_norm[,-(c(1:4, 8))]
+train_set_knn <- dtf_knn[train_indices,]
+test_set_knn <- dtf_knn[-train_indices,]
+
+# Purpose: performs kNN using given k and displays three measures of accuracy
+# Args: (numeric) kVal - k value to use
+# Returns: (numeric vector) - correlation, min-max accuracy, and MAPE
+# Prints: Correlation, Min-Max Accuracy, and MAPE
+evalK <- function(kVal) {
+  knnK <- kNN(rating ~ ., train_set_knn, test_set_knn,k=kVal)
+  knnK_num <- as.numeric(levels(knnK))[knnK]
+  knnK_cor <- cor(test_set_knn$rating, knnK_num)
+  knnK_min_max <- acc_min_max(test_set_knn, knnK_num, "rating")
+  knnK_mape <- acc_mape(test_set_knn, knnK_num, "rating")
+  print(paste("For k value of: ", kVal))
+  print(paste("Correlation: ", knnK_cor))
+  print(paste("Min Max Accuracy: ", knnK_min_max))
+  print(paste("Mean Absolute Percentage Error (MAPE): ", knnK_mape))
+  # return(c(knnK_cor, knnK_min_max, knnK_mape))
+}
+
+sqrtK <- floor(sqrt(ncol(train_set_knn)))
+evalK(3)
+evalK(5)
+evalK(sqrtK)
+evalK(9)
+evalK(11)
+
+```
+
+Results of evaluating kNN for predicting rating with different values of K can be seen above. The accuracy seems strangely high at a k value of 3, but otherwise, the k value at the square-root of the number of features seems to work well.
+
+The multiple regression model seems to work better than the kNN model overall. Even at its oddly best k value of 3, the kNN model produced higher rates of error than the multiple regression model on all measures of accuracy. 
+
+The relationship between the genre and other features is worth analyzing, particularly when it comes to identifying "Hentai" since this could be used to censor mature content in the appropriate settings. A logistic regression model is used for this purpose.
+```{r}
+logistic_form <- as.formula(paste("get('Hentai') ~ rating + episodes + members + ", paste(sprintf("get('%s')", allGenres[allGenres!="Hentai"]), collapse=" + ")))
+logit <- glm(logistic_form, data = train_set, family = "binomial")
+summary(logit)
+```
+
+As before, the statistically insignificant ones are removed with the same upper limit of .01 for p-value.
+
+```{r}
+
+unwantedGenres2 <- c("Hentai", "Romance", "School", "Supernatural", "Shounen", "Parody", "Samurai", "Thriller", "Super Power", "Space", "Seinen", "Martial Arts", "Vampire", "Shoujo", "Police", "Ecchi", "Josei", "Shounen Ai", "Game", "Cars", "Kids", "Shoujo Ai", "Yuri")
+logistic_form2 <- as.formula(paste("get('Hentai') ~ rating + episodes + members + ", paste(sprintf("get('%s')", setdiff(allGenres, unwantedGenres2)), collapse=" + ")))
+logit2 <- glm(logistic_form2, data = train_set, family = "binomial")
+summary(logit2)
+```
+Predictions are made using this logistic regression model and then evaluated with simple accuracy: correct/total.
+```{r}
+H_pred <- sapply(predict(logit2, test_set, type="response"), function(prob){
+  if (prob > 0.5) {
+    return(1)
+  }
+  else {
+    return(0)
+  }
+})
+
+H_accuracy <- sum(sapply(1:nrow(test_set), function(row) {
+  return(H_pred[row] == test_set[row,]$Hentai)
+}))/nrow(test_set)
+paste("The accuracy of this model in prediction is: ", H_accuracy)
+```
+The model demonstrates strikingly high accuracy, indicating a strong relationship between age-restricted material (Hentai) and the other entries. Note that this is biased because part of the missing data for episode counts for Hentai were previously imputed with a single value, making the relationship between episode count and Hentai stronger artificially.
+
+Deployment:
+
+The project has produced a model that could guess the rating of an anime based on its other factors with relatively high accuracy. The multiple regression model has proven more accurate than kNN at least and highlights some interesting relationships.
+
+As expected, popularity and rating share a close relationship. This could result from highly rated shows becoming popular due to its positive reception. As for genre, more popular genres like shounen and comedy reflect less about the rating while more niche ones like josei and dementia were found to influence it more.
+
+The project has also produced a logistic regression model that could accurately guess an anime as a Hentai. This could be deployed to place age restrictions where necessary. The model suggests the number of viewers and the number of episodes both share a negative relationship with the probability of an anime falling in that category, likely because people are less willing to publicize their viewership data of such a thing.
+
+This project could be repeated with data from a Japanese/Asian audience to denote any strong differences in the viewership patterns of Eastern and Western audiences. This may yield insight into how different cultures impact the different viewing experiences of the same entertainment.
